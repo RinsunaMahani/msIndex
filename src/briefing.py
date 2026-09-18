@@ -1,7 +1,8 @@
-"""Underwriting briefings written by Claude from the engine's own numbers.
+"""Underwriting briefings written by an LLM from the engine's own numbers.
 
-The model never sees raw data or free text from outside the system: every request carries a compact
-fact sheet the engine computed, and the prompt forbids inventing figures. Without API credentials the
+Either provider works - Claude (`ANTHROPIC_API_KEY`) or Gemini (`GEMINI_API_KEY`) - and whichever key is
+present is used. The model never sees raw data or free text from outside the system: every request carries a
+compact fact sheet the engine computed, and the prompt forbids inventing figures. Without any credentials the
 same fact sheet renders through a deterministic template, so the page always works.
 """
 import json
@@ -11,7 +12,11 @@ import pandas as pd
 
 from .pricing import PolicyTerms, apply_policy, basis_metrics, season_losses
 
-MODEL = "claude-opus-5"
+CLAUDE_MODEL = "claude-opus-5"
+# Gemini model ids move; these are tried in order, then anything the account can use for generateContent
+GEMINI_PREFERRED = ("gemini-flash-latest", "gemini-3-flash", "gemini-2.5-flash", "gemini-flash-lite-latest",
+                    "gemini-2.0-flash", "gemini-pro-latest")
+MODEL = CLAUDE_MODEL  # kept for callers that display a default name
 SYSTEM = (
     "You are an agricultural underwriting analyst for msIndex, a parametric maize insurance engine "
     "covering South Africa's maize triangle. You will be given a JSON fact sheet computed by the engine.\n\n"
@@ -30,8 +35,21 @@ BRIEF_PROMPT = (
 )
 
 
+def _gemini_key() -> str | None:
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+
+def active_provider() -> str | None:
+    """Which LLM the page will use: Claude if configured, else Gemini, else none."""
+    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
+        return "anthropic"
+    if _gemini_key():
+        return "gemini"
+    return None
+
+
 def credentials_available() -> bool:
-    return bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
+    return active_provider() is not None
 
 
 def build_facts(df: pd.DataFrame, season: int, terms: PolicyTerms, context: dict) -> dict:
@@ -122,21 +140,69 @@ def fallback_briefing(facts: dict) -> str:
     return "\n\n".join(lines)
 
 
+def _task(question: str | None) -> str:
+    return BRIEF_PROMPT if not question else (
+        "Answer the underwriter's question using only the fact sheet. Keep it under four sentences. "
+        f"If the fact sheet does not contain the answer, say exactly what is missing.\n\nQuestion: {question}"
+    )
+
+
+def _user_content(facts: dict, question: str | None) -> str:
+    return f"<fact_sheet>\n{json.dumps(facts, indent=2)}\n</fact_sheet>\n\n{_task(question)}"
+
+
+_gemini_model: str | None = None
+
+
+def _pick_gemini_model(client) -> str:
+    """Model ids change; prefer a known fast one, else take whatever this key can actually call."""
+    global _gemini_model
+    if _gemini_model:
+        return _gemini_model
+    usable = {m.name.split("/")[-1] for m in client.models.list()
+              if "generateContent" in (m.supported_actions or [])}
+    for name in GEMINI_PREFERRED:
+        if name in usable:
+            _gemini_model = name
+            return name
+    flash = sorted(n for n in usable if "flash" in n)
+    _gemini_model = (flash or sorted(usable))[0] if usable else GEMINI_PREFERRED[0]
+    return _gemini_model
+
+
+def gemini_briefing(facts: dict, question: str | None = None, max_tokens: int = 1200) -> tuple[str, str]:
+    """Same job as the Claude path, on Google's free-tier API. Returns (text, model_used)."""
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=_gemini_key())
+    model = _pick_gemini_model(client)
+    response = client.models.generate_content(
+        model=model,
+        contents=_user_content(facts, question),
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM,
+            max_output_tokens=max_tokens,
+            temperature=0.2,  # a briefing should read the same way twice
+        ),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned no text (the request may have been blocked).")
+    return text, model
+
+
 def claude_briefing(facts: dict, question: str | None = None, max_tokens: int = 1200) -> str:
     """Asks Claude to write the briefing, or to answer a question strictly from the fact sheet."""
     import anthropic
 
     client = anthropic.Anthropic()
-    task = BRIEF_PROMPT if not question else (
-        "Answer the underwriter's question using only the fact sheet. Keep it under four sentences. "
-        f"If the fact sheet does not contain the answer, say exactly what is missing.\n\nQuestion: {question}"
-    )
     request = dict(
-        model=MODEL,
+        model=CLAUDE_MODEL,
         max_tokens=max_tokens,
         system=SYSTEM,
         output_config={"effort": "low"},  # a short briefing from supplied numbers needs little deliberation
-        messages=[{"role": "user", "content": f"<fact_sheet>\n{json.dumps(facts, indent=2)}\n</fact_sheet>\n\n{task}"}],
+        messages=[{"role": "user", "content": _user_content(facts, question)}],
     )
     try:
         # Server-side fallback keeps the page working if a request is declined
@@ -150,15 +216,19 @@ def claude_briefing(facts: dict, question: str | None = None, max_tokens: int = 
 
 
 def write_briefing(facts: dict, question: str | None = None) -> tuple[str, str]:
-    """Returns (text, source). Falls back to the template if Claude is unavailable."""
-    if not credentials_available():
+    """Returns (text, source). Falls back to the template if no model is reachable."""
+    provider = active_provider()
+    if provider is None:
         if question:
-            return ("Claude is not configured, so questions cannot be answered. Set ANTHROPIC_API_KEY to enable this.",
-                    "unavailable")
+            return ("No language model is configured, so questions cannot be answered. Set GEMINI_API_KEY "
+                    "(free tier) or ANTHROPIC_API_KEY to enable this.", "unavailable")
         return fallback_briefing(facts), "template"
     try:
-        return claude_briefing(facts, question), f"claude ({MODEL})"
+        if provider == "anthropic":
+            return claude_briefing(facts, question), f"claude ({CLAUDE_MODEL})"
+        text, model = gemini_briefing(facts, question)
+        return text, f"gemini ({model})"
     except Exception as exc:  # network, credentials, quota - the page still has to render
         if question:
-            return f"Claude could not answer just now ({type(exc).__name__}).", "unavailable"
-        return fallback_briefing(facts), f"template (Claude unavailable: {type(exc).__name__})"
+            return f"{provider.capitalize()} could not answer just now ({type(exc).__name__}).", "unavailable"
+        return fallback_briefing(facts), f"template ({provider} unavailable: {type(exc).__name__})"
