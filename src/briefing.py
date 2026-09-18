@@ -13,9 +13,12 @@ import pandas as pd
 from .pricing import PolicyTerms, apply_policy, basis_metrics, season_losses
 
 CLAUDE_MODEL = "claude-opus-5"
-# Gemini model ids move; these are tried in order, then anything the account can use for generateContent
-GEMINI_PREFERRED = ("gemini-flash-latest", "gemini-3-flash", "gemini-2.5-flash", "gemini-flash-lite-latest",
-                    "gemini-2.0-flash", "gemini-pro-latest")
+# Gemini model ids move; these are tried in order, then anything the account can use for generateContent.
+# The "lite" models answer a grounded summary in about a second; the larger flash models spend the whole
+# token budget on internal reasoning and often return nothing, which is wrong for this job.
+GEMINI_PREFERRED = ("gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite",
+                    "gemini-2.5-flash-lite", "gemini-flash-latest")
+GEMINI_TIMEOUT_MS = 45_000
 MODEL = CLAUDE_MODEL  # kept for callers that display a default name
 SYSTEM = (
     "You are an agricultural underwriting analyst for msIndex, a parametric maize insurance engine "
@@ -25,6 +28,9 @@ SYSTEM = (
     "about specific seasons.\n"
     "- If the fact sheet cannot answer something, say so plainly.\n"
     "- Be direct and concrete. An underwriter reads this to decide whether to pay, reserve or re-rate.\n"
+    "- Copy figures exactly as they appear. For rand amounts over a million, round and say 'about R1.5 million' "
+    "rather than retyping every digit.\n"
+    "- 'longest_dry_spell_days' is the longest unbroken run of dry days, not a count of separate dry spells.\n"
     "- Flag basis risk honestly: the index can pay when there was no loss, and miss losses that happened.\n"
     "- Never promise a payout; decisions follow the signed ledger and policy wording."
 )
@@ -61,7 +67,7 @@ def build_facts(df: pd.DataFrame, season: int, terms: PolicyTerms, context: dict
         "province": r["province"],
         "rain_oct_mar_mm": round(float(r["rain_mm"])),
         "water_balance_mm": round(float(r["water_balance_mm"])),
-        "dry_spell_days": int(r["dry_spell_days"]),
+        "longest_dry_spell_days": int(r["dry_spell_days"]),
         "heat_stress_days": int(r["heat_stress_days"]),
         "greenness_anomaly": round(float(r["ndvi_anomaly"]), 3),
         "predicted_yield_anomaly_pct": round(float(r["pred_yield_anomaly"]) * 100, 1),
@@ -170,26 +176,32 @@ def _pick_gemini_model(client) -> str:
     return _gemini_model
 
 
-def gemini_briefing(facts: dict, question: str | None = None, max_tokens: int = 1200) -> tuple[str, str]:
+def gemini_briefing(facts: dict, question: str | None = None, max_tokens: int = 2000,
+                    attempts: int = 2) -> tuple[str, str]:
     """Same job as the Claude path, on Google's free-tier API. Returns (text, model_used)."""
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=_gemini_key())
     model = _pick_gemini_model(client)
-    response = client.models.generate_content(
-        model=model,
-        contents=_user_content(facts, question),
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM,
-            max_output_tokens=max_tokens,
-            temperature=0.2,  # a briefing should read the same way twice
-        ),
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM,
+        max_output_tokens=max_tokens,
+        temperature=0.2,  # a briefing should read the same way twice
+        http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),  # fail over to the template rather than hang
     )
-    text = (response.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned no text (the request may have been blocked).")
-    return text, model
+    last_error: Exception | None = None
+    for _ in range(attempts):  # the free tier occasionally returns a 5xx; one retry clears it
+        try:
+            response = client.models.generate_content(
+                model=model, contents=_user_content(facts, question), config=config)
+            text = (response.text or "").strip()
+            if text:
+                return text, model
+            last_error = RuntimeError("empty response (the model may have been cut off or blocked)")
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Gemini did not answer: {last_error}")
 
 
 def claude_briefing(facts: dict, question: str | None = None, max_tokens: int = 1200) -> str:

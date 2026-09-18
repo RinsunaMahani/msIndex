@@ -10,6 +10,12 @@ from src.trigger import TEST_START_SEASON
 ctx = get_context(TEST_START_SEASON, os.path.getmtime("data/district_seasons.csv"))
 terms = policy_sidebar()
 
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def cached_briefing(facts_json: str, question: str | None) -> tuple[str, str]:
+    """One API call per (season, terms, question): a demo can click around without re-billing or re-waiting."""
+    return write_briefing(json.loads(facts_json), question)
+
 st.subheader("Underwriting briefing", anchor=False)
 st.markdown("A language model reads the engine's own numbers and writes the season note an underwriter would "
             "otherwise assemble by hand — and answers questions about the season strictly from those numbers.")
@@ -38,7 +44,7 @@ with col1:
     with st.container(border=True):
         st.markdown(f"**Season note — {season_label(season)}**")
         with st.spinner("Writing the briefing…"):
-            text, source = write_briefing(facts)
+            text, source = cached_briefing(json.dumps(facts, sort_keys=True), None)
         st.markdown(text)
         st.caption(f"Source: {source}. Figures come from the engine, not the model — the prompt forbids inventing "
                    "numbers or using outside knowledge about a season.")
@@ -49,7 +55,7 @@ with col1:
                                  label_visibility="collapsed", key="briefing_q")
         if question:
             with st.spinner("Thinking…"):
-                answer, answer_source = write_briefing(facts, question)
+                answer, answer_source = cached_briefing(json.dumps(facts, sort_keys=True), question)
             st.markdown(answer)
             st.caption(f"Source: {answer_source}")
         else:
