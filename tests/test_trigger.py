@@ -68,7 +68,7 @@ def test_pseudonym_is_stable_and_opaque():
 def seeded_chain(n=4):
     chain = AuditChain()
     for i in range(n):
-        chain.append_decision(f"PARCEL-{i}", 2025, {"rain_mm": 400.0 + i}, -0.2, -0.15, int(i % 2 == 0))
+        chain.append_decision(f"PARCEL-{i}", 2025, {"rain_mm": 400.0 + i}, -0.2, int(i % 2 == 0))
     return chain
 
 
@@ -88,6 +88,14 @@ def test_tampering_flips_rather_than_sets():
     before = chain.chain[1]["payload"]["decision"]
     chain.tamper_decision(1)
     assert chain.chain[1]["payload"]["decision"] != before
+
+
+def test_editing_a_sealed_amount_is_caught():
+    chain = AuditChain()
+    chain.append_decision("P0", 2025, {"rain_mm": 300.0}, -0.3, 1, payout_share=0.5, payout_zar=1000.0,
+                          policy_terms={"attachment": -0.1})
+    chain.chain[0]["payload"]["payout_zar"] = 9_000_000.0
+    assert chain.verify() == (False, 0)
 
 
 def test_rewriting_a_hash_is_also_caught():

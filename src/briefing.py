@@ -12,7 +12,7 @@ import pandas as pd
 
 from .pricing import PolicyTerms, apply_policy, basis_metrics, season_losses
 
-CLAUDE_MODEL = "claude-opus-5"
+CLAUDE_MODEL = "claude-opus-5-5"
 # Gemini model ids move; these are tried in order, then anything the account can use for generateContent.
 # The "lite" models answer a grounded summary in about a second; the larger flash models spend the whole
 # token budget on internal reasoning and often return nothing, which is wrong for this job.

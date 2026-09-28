@@ -1,11 +1,12 @@
 import os
+from dataclasses import asdict
 
 import pandas as pd
 import streamlit as st
 
 from src.app_data import DATA_PATH, get_context, policy_sidebar, season_label
-from src.ledger import batch_manifest, load, model_version, payment_batch, save, season_root
-from src.model import FEATURE_COLS, make_model
+from src.ledger import batch_manifest, is_current_schema, load, model_version, payment_batch, save, season_root
+from src.model import FEATURE_COLS, fit_model
 from src.trigger import TEST_START_SEASON, USING_FALLBACK_SECRETS, AuditChain
 
 TAMPER_INDEX = 1
@@ -17,22 +18,23 @@ terms = policy_sidebar()
 @st.cache_resource
 def fitted_version(data_mtime: float) -> str:
     """Fingerprint of the model that scores the current season, bound into every record it signs."""
-    labelled = ctx.labelled
-    model = make_model().fit(labelled[FEATURE_COLS], labelled["yield_anomaly"])
-    return model_version(model, FEATURE_COLS, DATA_PATH)
+    return model_version(fit_model(ctx.labelled), FEATURE_COLS, DATA_PATH)
 
 
 def build_chain() -> AuditChain:
     chain = AuditChain()
     version = fitted_version(os.path.getmtime(DATA_PATH))
     for _, r in ctx.current.sort_values("district").iterrows():
+        share = float(terms.payout_share(r["pred_yield_anomaly"]))
         chain.append_decision(
             parcel_id=f"PARCEL-ZA-{r['province'][:2].upper()}-{r['district'][:4].upper()}-{int(r['season'])}",
             season=int(r["season"]),
             features={col: r[col] for col in FEATURE_COLS},
             prediction=r["pred_yield_anomaly"],
-            cutoff=ctx.index_cutoff,
-            decision=int(terms.payout_share(r["pred_yield_anomaly"]) > 0),
+            decision=int(share > 0),
+            payout_share=share,
+            payout_zar=share * terms.sum_insured_ha * terms.hectares_per_parcel,
+            policy_terms=asdict(terms),
             model_version=version,
         )
     save(chain, ctx.current_season)
@@ -41,6 +43,8 @@ def build_chain() -> AuditChain:
 
 if "audit_chain" not in st.session_state:
     restored = load(ctx.current_season)
+    if restored is not None and not is_current_schema(restored):
+        restored = None  # written before records sealed their own terms; re-seal rather than settle from it
     st.session_state.audit_chain = restored or build_chain()
     st.session_state.tampered = restored is not None and not restored.verify()[0]
 
@@ -54,6 +58,11 @@ if USING_FALLBACK_SECRETS:
 
 chain = st.session_state.audit_chain
 is_valid, broken_idx = chain.verify()
+sealed_terms = chain.chain[0]["payload"].get("policy_terms") if chain.chain else None
+if sealed_terms and sealed_terms != asdict(terms):
+    st.info("These decisions were sealed under different policy terms from the ones in the sidebar. Settlement "
+            "pays what was sealed; rebuild the ledger to seal decisions under the current terms.",
+            icon=":material/gavel:")
 
 if is_valid:
     st.success("Decision ledger verified: all hash links and HMAC signatures intact.", icon=":material/verified:")
@@ -85,7 +94,8 @@ audit_rows = [{
     "Pseudonym": r["payload"]["parcel_pseudonym"],
     "Season": season_label(r["payload"]["season"]),
     "Predicted anomaly": f"{r['payload']['prediction']:+.2%}",
-    "Payout": f"{terms.payout_share(r['payload']['prediction']):.0%}",
+    "Payout": f"{r['payload']['payout_share']:.0%}",
+    "Amount (ZAR)": f"{r['payload']['payout_zar']:,.0f}",
     "Decision": "PAYOUT" if r["payload"]["decision"] == 1 else "NO PAY",
     "Previous hash": r["prev_hash"][:14] + "…",
     "Record hash": r["record_hash"][:14] + "…",
@@ -98,7 +108,7 @@ if not is_valid:
                icon=":material/block:")
 else:
     try:
-        csv_text, signature, summary = payment_batch(chain, terms, ctx.current_season)
+        csv_text, signature, summary = payment_batch(chain, ctx.current_season)
     except ValueError as exc:
         st.error(str(exc), icon=":material/error:")
     else:

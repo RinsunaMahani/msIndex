@@ -80,7 +80,7 @@ def season_features(rain: pd.Series, tmax: pd.Series, et0: pd.Series, ndvi: pd.S
         "rain_flowering_mm": round(float(flowering_rain.sum()), 1),
         "water_balance_mm": round(float(r.sum() - e.sum()), 1),
         "water_balance_flowering_mm": round(float(flowering_rain.sum() - flowering_et0.sum()), 1),
-        "dry_spell_days": _longest_run((dry.fillna(0) < DRY_DAY_MM).to_numpy()),
+        "dry_spell_days": _longest_run((dry < DRY_DAY_MM).to_numpy()),  # a missing day breaks a run, never extends it
         "heat_stress_days": int((t >= HEAT_THRESHOLD_C).sum()),
         "greenup_doy": greenup_doy,
         "ndvi_peak": round(float(smooth.max()), 4),

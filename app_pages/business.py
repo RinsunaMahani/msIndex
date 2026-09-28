@@ -4,15 +4,15 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from src.app_data import get_context, policy_sidebar
+from src.app_data import DATA_PATH, get_context, policy_sidebar
 from src.pricing import apply_policy, premium, risk_stats, season_losses
 from src.trigger import TEST_START_SEASON
 
-ctx = get_context(TEST_START_SEASON, os.path.getmtime("data/district_seasons.csv"))
+ctx = get_context(TEST_START_SEASON, os.path.getmtime(DATA_PATH))
 terms = policy_sidebar()
 
-scored = apply_policy(ctx.test, terms)
-stats = risk_stats(season_losses(scored))
+scored = apply_policy(ctx.labelled, terms)
+stats = risk_stats(season_losses(scored), limit=terms.limit_share)
 price = premium(stats, terms)
 
 # National commercial maize area from the CEC release the pipeline parsed (2026 season, all provinces)

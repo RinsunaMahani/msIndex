@@ -1,0 +1,25 @@
+{
+  "version": 8,
+  "name": "Esri World Imagery with place names",
+  "sources": {
+    "imagery": {
+      "type": "raster",
+      "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      "tileSize": 256,
+      "maxzoom": 19,
+      "attribution": "Imagery &copy; Esri, Maxar, Earthstar Geographics"
+    },
+    "labels": {
+      "type": "raster",
+      "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
+      "tileSize": 256,
+      "maxzoom": 19,
+      "attribution": "Boundaries and places &copy; Esri, HERE, Garmin"
+    }
+  },
+  "layers": [
+    {"id": "background", "type": "background", "paint": {"background-color": "#0b1620"}},
+    {"id": "imagery", "type": "raster", "source": "imagery"},
+    {"id": "labels", "type": "raster", "source": "labels"}
+  ]
+}

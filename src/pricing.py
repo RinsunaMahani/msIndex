@@ -55,25 +55,57 @@ def season_losses(scored: pd.DataFrame) -> pd.Series:
     return scored.groupby("season")["payout_share"].mean()
 
 
-def risk_stats(season_loss: pd.Series, bootstrap: int = 20000, seed: int = 42) -> dict:
-    """Expected loss and tail measures.
+MIN_LOSS_SEASONS_FOR_FIT = 3
+TAIL_METHOD_FIT = "zero-inflated beta fitted to the seasonal losses"
+TAIL_METHOD_WORST = "worst observed season (too few loss seasons to fit a tail)"
 
-    With ~26 observed seasons the 1-in-200 tail cannot be read off the data, so seasons are
-    resampled with replacement to get a spread, and the number is reported as modelled, not measured.
+
+def _loss_draws(values: np.ndarray, limit: float, n: int, seed: int) -> np.ndarray | None:
+    """Draws from a zero-inflated beta: a season pays with the observed frequency, and when it pays, the
+    loss follows a beta fitted by moments to the paying seasons, bounded by the policy limit.
+
+    Resampling ~26 seasons can never produce a season worse than the worst one seen, so a 1-in-200
+    figure read off a resample is just the observed maximum. A fitted shape lets the tail extend past it.
     """
-    values = season_loss.to_numpy(dtype="float64")
+    positive = values[values > 0] / limit
+    if len(positive) < MIN_LOSS_SEASONS_FOR_FIT or positive.var(ddof=1) <= 0:
+        return None
+    m, v = positive.mean(), positive.var(ddof=1)
+    common = m * (1 - m) / v - 1
+    if common <= 0:  # losses too dispersed for a beta with this mean
+        return None
     rng = np.random.default_rng(seed)
-    draws = rng.choice(values, size=(bootstrap,), replace=True)
+    pays = rng.random(n) < len(positive) / len(values)
+    return np.where(pays, rng.beta(m * common, (1 - m) * common, n) * limit, 0.0)
+
+
+def risk_stats(season_loss: pd.Series, limit: float = 1.0, draws: int = 200_000, seed: int = 42) -> dict:
+    """Expected loss and tail measures. The expected loss is measured; the 1-in-200 tail is modelled
+    when there are enough loss seasons to fit one, and otherwise set to the worst observed season."""
+    values = season_loss.to_numpy(dtype="float64")
+    sample = _loss_draws(values, max(limit, 1e-9), draws, seed)
+    worst = float(values.max()) if len(values) else 0.0
+    if sample is None:
+        var_995 = tvar_995 = var_90 = worst
+        method = TAIL_METHOD_WORST
+    else:
+        var_995 = float(np.quantile(sample, CAPITAL_QUANTILE))
+        tail = sample[sample >= var_995]
+        tvar_995 = float(tail.mean()) if len(tail) else var_995
+        var_90 = float(np.quantile(sample, 0.90))
+        method = TAIL_METHOD_FIT
+    expected = float(values.mean()) if len(values) else 0.0
     return {
-        "expected_loss": float(values.mean()),
+        "expected_loss": expected,
         "std_dev": float(values.std(ddof=1)) if len(values) > 1 else 0.0,
-        "worst_observed": float(values.max()),
+        "worst_observed": worst,
         "worst_season": int(season_loss.idxmax()) if len(season_loss) else None,
         "payout_seasons": int((values > 0).sum()),
         "seasons": int(len(values)),
-        "var_995": float(np.quantile(draws, CAPITAL_QUANTILE)),
-        "tvar_995": float(draws[draws >= np.quantile(draws, CAPITAL_QUANTILE)].mean()),
-        "var_90": float(np.quantile(draws, 0.90)),
+        "var_995": max(var_995, expected),
+        "tvar_995": max(tvar_995, var_995, expected),
+        "var_90": var_90,
+        "tail_method": method,
     }
 
 

@@ -68,7 +68,7 @@ st.markdown(
 )
 demo = AuditChain()
 for i in range(3):
-    demo.append_decision(f"PARCEL-DEMO-{i}", ctx.current_season, {"rain_mm": 400.0 + i}, -0.2 - i / 100, -0.15, i % 2)
+    demo.append_decision(f"PARCEL-DEMO-{i}", ctx.current_season, {"rain_mm": 400.0 + i}, -0.2 - i / 100, i % 2)
 before_root = season_root(demo)
 demo.tamper_decision(1)
 after_valid, after_idx = demo.verify()

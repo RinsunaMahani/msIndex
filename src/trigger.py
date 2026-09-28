@@ -102,15 +102,21 @@ class AuditChain:
         serialized = json.dumps(payload, sort_keys=True).encode("utf-8")
         return hmac.new(SECRET_KEY, serialized + prev_hash.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    def append_decision(self, parcel_id: str, season: int, features: dict, prediction: float, cutoff: float, decision: int, model_version: str = "v1.0.0"):
+    def append_decision(self, parcel_id: str, season: int, features: dict, prediction: float, decision: int,
+                        payout_share: float = 0.0, payout_zar: float = 0.0, policy_terms: dict | None = None,
+                        model_version: str = "v1.0.0"):
+        """Seals a decision together with the terms it was made under and the amount it commits to, so
+        settlement reads the sealed amount rather than recomputing it from whatever terms apply later."""
         prev_hash = self.chain[-1]["record_hash"] if self.chain else GENESIS_HASH
         payload = {
             "parcel_pseudonym": pseudonymise_parcel(parcel_id),
             "season": int(season),
             "features": {k: float(v) for k, v in features.items()},
             "prediction": float(round(prediction, 4)),
-            "cutoff": float(round(cutoff, 4)),
             "decision": int(decision),
+            "payout_share": float(round(payout_share, 4)),
+            "payout_zar": float(round(payout_zar, 2)),
+            "policy_terms": dict(policy_terms or {}),
             "model_version": model_version,
             "sealed_at": datetime.now(timezone.utc).isoformat(),
         }

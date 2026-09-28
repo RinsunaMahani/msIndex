@@ -3,11 +3,12 @@ import os
 
 import streamlit as st
 
-from src.app_data import get_context, policy_sidebar, season_label
+from src.app_data import DATA_PATH, get_context, policy_sidebar, season_label
 from src.briefing import CLAUDE_MODEL, active_provider, build_facts, track_record, write_briefing
+from src.model import SPLIT_CURRENT
 from src.trigger import TEST_START_SEASON
 
-ctx = get_context(TEST_START_SEASON, os.path.getmtime("data/district_seasons.csv"))
+ctx = get_context(TEST_START_SEASON, os.path.getmtime(DATA_PATH))
 terms = policy_sidebar()
 
 
@@ -24,9 +25,13 @@ season = st.select_slider("Season", options=ctx.seasons, value=ctx.current_seaso
                           key="briefing_season")
 facts = build_facts(ctx.df, season, terms, {
     "track_record": track_record(ctx.df, ctx.test, terms),
-    "model": {"type": "RidgeCV on 10 satellite and weather features", "index_scale": float(ctx.df["index_scale"].iloc[0]),
-              "trained_on": f"{season_label(ctx.seasons[0])}–{season_label(TEST_START_SEASON - 1)}"},
+    "model": {"type": "Ridge regression on 10 satellite and weather features, penalty chosen by leave-one-season-out CV",
+              "index_scale": float(ctx.df.loc[ctx.df["season"] == season, "index_scale"].iloc[0]),
+              "trained_on": (f"{season_label(ctx.seasons[0])}–{season_label(int(ctx.labelled['season'].max()))}"
+                             if season == ctx.current_season and ctx.current["Data split"].iloc[0] == SPLIT_CURRENT
+                             else f"{season_label(ctx.seasons[0])}–{season_label(TEST_START_SEASON - 1)}")},
 })
+model_name = {"anthropic": "Claude", "gemini": "Gemini"}.get(active_provider(), "the model")
 
 provider = active_provider()
 if provider == "anthropic":
@@ -64,8 +69,9 @@ with col1:
 
 with col2:
     with st.container(border=True):
-        st.markdown("**The fact sheet Claude receives**")
-        st.caption("No raw records and no user text reach the model — only these computed figures.")
+        st.markdown(f"**The fact sheet {model_name} receives**")
+        st.caption("No raw records or parcel identifiers reach the model: only these computed figures, plus the "
+                   "question typed above if you ask one.")
         st.json(facts, expanded=False)
         st.download_button("Download fact sheet (JSON)", json.dumps(facts, indent=2).encode("utf-8"),
                            file_name=f"msindex_facts_{season}.json", mime="application/json",

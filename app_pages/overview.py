@@ -2,18 +2,17 @@ import os
 
 import streamlit as st
 
-from src.app_data import get_context, policy_sidebar, season_label
+from src.app_data import DATA_PATH, get_context, policy_sidebar, season_label
 from src.pricing import apply_policy, basis_metrics, premium, risk_stats, season_losses
 from src.trigger import LOSS_THRESHOLD, TEST_START_SEASON, evaluate_triggers
 
-ctx = get_context(TEST_START_SEASON, os.path.getmtime("data/district_seasons.csv"))
+ctx = get_context(TEST_START_SEASON, os.path.getmtime(DATA_PATH))
 terms = policy_sidebar()
 
 _, metrics = evaluate_triggers(ctx.test, rainfall_cutoff_mm=ctx.default_cutoff)
-scored = apply_policy(ctx.test, terms)
-stats = risk_stats(season_losses(scored))
+bm = basis_metrics(apply_policy(ctx.test, terms))
+stats = risk_stats(season_losses(apply_policy(ctx.labelled, terms)), limit=terms.limit_share)
 price = premium(stats, terms)
-bm = basis_metrics(scored)
 
 st.subheader("A drought that pays out in days, not months", anchor=False)
 st.markdown(
@@ -54,7 +53,7 @@ with c2, st.container(border=True):
     st.markdown("""
 **Decisions that survive a dispute**
 
-Each payout decision is sealed with its features, the cutoff, and a fingerprint of the exact model and dataset
+Each payout decision is sealed with its features, the policy terms, the amount owed, and a fingerprint of the exact model and dataset
 that produced it, chained by HMAC-SHA256. Editing one historical decision breaks every record after it, and the
 settlement file will not generate from a broken ledger.
 """)

@@ -6,13 +6,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from src.app_data import download_row, get_context, policy_sidebar, season_label
+from src.app_data import DATA_PATH, download_row, get_context, policy_sidebar, season_label
 from src.pricing import (COST_OF_CAPITAL, apply_policy, basis_metrics, district_correlation, premium, reinsurance_split,
                          risk_stats, season_losses)
 from src.termsheet import build_term_sheet
 from src.trigger import TEST_START_SEASON
 
-ctx = get_context(TEST_START_SEASON, os.path.getmtime("data/district_seasons.csv"))
+ctx = get_context(TEST_START_SEASON, os.path.getmtime(DATA_PATH))
 terms = policy_sidebar()
 
 st.subheader("Parametric book pricing", anchor=False)
@@ -20,14 +20,16 @@ st.subheader("Parametric book pricing", anchor=False)
 c1, c2, c3 = st.columns(3)
 expense_ratio = c1.slider("Expense ratio (% of gross premium)", 5, 40, 20, key="expenses") / 100
 cost_of_capital = c2.slider("Cost of capital (% a year)", 5, 30, int(COST_OF_CAPITAL * 100), key="coc") / 100
-basis = c3.segmented_control("Experience used", options=["Holdout seasons", "All seasons"],
-                             default="Holdout seasons", required=True, key="basis",
-                             help="Holdout seasons are out-of-sample; all seasons include in-sample predictions.")
+basis = c3.segmented_control("Experience used", options=["All seasons", "Holdout seasons"],
+                             default="All seasons", required=True, key="basis",
+                             help="All seasons gives the longest loss history to price from, but includes in-sample "
+                                  "predictions. Holdout seasons are out-of-sample, but only "
+                                  f"{ctx.test['season'].nunique()} seasons long.")
 
 experience = ctx.test if basis == "Holdout seasons" else ctx.labelled
 scored = apply_policy(experience, terms)
 losses = season_losses(scored)
-stats = risk_stats(losses)
+stats = risk_stats(losses, limit=terms.limit_share)
 price = premium(stats, terms, expense_ratio=expense_ratio, cost_of_capital=cost_of_capital)
 
 with st.container(horizontal=True):
@@ -46,7 +48,7 @@ with st.container(horizontal=True):
     st.metric("Worst season observed", f"{stats['worst_observed']:.0%} of cover", border=True,
               help=f"Season {season_label(stats['worst_season'])} — the heaviest loss in the experience period.")
     st.metric("Modelled 1-in-200 (TVaR)", f"{stats['tvar_995']:.0%} of cover", border=True,
-              help="Bootstrap of the observed seasons. With so few seasons this is indicative, not measured.")
+              help=f"Method: {stats['tail_method']}. With so few seasons this is indicative, not measured.")
 
 left, right = st.columns(2)
 
@@ -107,8 +109,11 @@ with st.expander("Assumptions behind these numbers", icon=":material/info:"):
     st.markdown(
         f"- Experience: **{basis.lower()}** ({losses.index.min()}–{losses.index.max()}, {stats['seasons']} seasons), "
         "one row per district-season, the book spread equally across the 12 districts.\n"
-        f"- Capital is held to the bootstrapped **{1 - 0.995:.1%} tail (TVaR)** of the seasonal loss distribution, "
-        f"charged at **{cost_of_capital:.0%}**. With {stats['seasons']} seasons of experience the tail is indicative.\n"
+        f"- Capital is held to the **{1 - 0.995:.1%} tail (TVaR)** of the seasonal loss distribution, "
+        f"charged at **{cost_of_capital:.0%}**. Tail method: {stats['tail_method']}. A season pays with the "
+        "observed frequency and, when it pays, the loss follows a beta shape fitted to the paying seasons, so the "
+        f"tail can reach beyond the worst season seen. With {stats['seasons']} seasons of experience it is "
+        "indicative.\n"
         "- The index is the predicted yield shortfall against the provincial trend, not a measured farm yield.\n"
         "- No reinstatement, no multi-year terms, and the sum insured is a fixed rand amount rather than tracking "
         "the maize price."

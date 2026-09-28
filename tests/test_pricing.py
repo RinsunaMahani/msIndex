@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -95,21 +97,60 @@ def test_district_correlation_is_a_correlation():
     assert -1 <= district_correlation(sample_scored()) <= 1
 
 
+def seal(chain, parcel, prediction, terms=TERMS):
+    share = float(terms.payout_share(prediction))
+    chain.append_decision(parcel, 2025, {"rain_mm": 400.0}, prediction, int(share > 0), payout_share=share,
+                          payout_zar=share * terms.sum_insured_ha * terms.hectares_per_parcel,
+                          policy_terms=asdict(terms))
+
+
 def test_payment_batch_refuses_a_broken_ledger():
     chain = AuditChain()
     for i in range(3):
-        chain.append_decision(f"P{i}", 2025, {"rain_mm": 400.0}, -0.3, -0.15, 1)
+        seal(chain, f"P{i}", -0.3)
     chain.tamper_decision(1)
     with pytest.raises(ValueError, match="does not verify"):
-        payment_batch(chain, TERMS, 2025)
+        payment_batch(chain, 2025)
 
 
 def test_payment_batch_totals_match_the_ladder():
     chain = AuditChain()
-    chain.append_decision("P0", 2025, {"rain_mm": 400.0}, -0.40, -0.15, 1)
-    chain.append_decision("P1", 2025, {"rain_mm": 700.0}, 0.10, -0.15, 0)
-    csv_text, signature, summary = payment_batch(chain, TERMS, 2025)
+    seal(chain, "P0", -0.40)
+    seal(chain, "P1", 0.10)
+    csv_text, signature, summary = payment_batch(chain, 2025)
     assert summary["payments"] == 1  # the no-pay record is not in the batch
     assert summary["total_zar"] == pytest.approx(TERMS.sum_insured_ha * TERMS.hectares_per_parcel)
     assert len(signature) == 64
     assert "P0" not in csv_text  # only the pseudonym travels
+
+
+def test_payment_batch_pays_what_was_sealed_not_todays_terms():
+    chain = AuditChain()
+    seal(chain, "P0", -0.25)  # sealed at half cover under TERMS
+    _, _, summary = payment_batch(chain, 2025)
+    assert summary["total_zar"] == pytest.approx(0.5 * TERMS.sum_insured_ha * TERMS.hectares_per_parcel)
+    assert chain.chain[0]["payload"]["policy_terms"]["attachment"] == TERMS.attachment
+
+
+def test_payment_batch_refuses_a_ledger_without_sealed_amounts():
+    chain = AuditChain()
+    chain.append_decision("P0", 2025, {"rain_mm": 400.0}, -0.3, 1)
+    for record in chain.chain:
+        del record["payload"]["policy_terms"]
+    chain.chain[0]["record_hash"] = chain._hash_record(chain.chain[0]["payload"], chain.chain[0]["prev_hash"])
+    with pytest.raises(ValueError, match="rebuild"):
+        payment_batch(chain, 2025)
+
+
+def test_tail_falls_back_to_worst_season_with_few_losses():
+    losses = pd.Series([0.0, 0.0, 0.3, 0.0, 0.1], index=range(2015, 2020))
+    stats = risk_stats(losses)
+    assert stats["var_995"] == pytest.approx(0.3) and "worst observed" in stats["tail_method"]
+
+
+def test_fitted_tail_can_exceed_the_worst_season_but_not_the_limit():
+    losses = pd.Series([0.0] * 14 + [0.05, 0.1, 0.2, 0.3, 0.15, 0.4], index=range(2000, 2020))
+    stats = risk_stats(losses, limit=1.0)
+    assert "beta" in stats["tail_method"]
+    assert stats["tvar_995"] >= stats["var_995"] > stats["worst_observed"]
+    assert stats["tvar_995"] <= 1.0

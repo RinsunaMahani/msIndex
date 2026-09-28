@@ -4,11 +4,11 @@ import numpy as np
 import plotly.express as px
 import streamlit as st
 
-from src.app_data import download_row, get_context, largest_gap, policy_sidebar, season_label, trigger_sweep
+from src.app_data import DATA_PATH, download_row, get_context, largest_gap, policy_sidebar, season_label, trigger_sweep
 from src.pricing import apply_policy, basis_metrics
 from src.trigger import LOSS_THRESHOLD, TEST_START_SEASON, evaluate_triggers
 
-ctx = get_context(TEST_START_SEASON, os.path.getmtime("data/district_seasons.csv"))
+ctx = get_context(TEST_START_SEASON, os.path.getmtime(DATA_PATH))
 terms = policy_sidebar()
 test_first, test_last = int(ctx.test["season"].min()), int(ctx.test["season"].max())
 

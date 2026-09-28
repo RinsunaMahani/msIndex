@@ -72,6 +72,12 @@ def test_features_are_computed_over_the_right_windows():
     assert feats["dry_spell_days"] == 0                                 # every day has 3 mm
 
 
+def test_missing_rain_days_do_not_count_as_dry():
+    rain, tmax, et0, ndvi = synthetic_series()
+    rain.loc["2015-12-10":"2015-12-13"] = np.nan  # a 4-day gap in an otherwise wet season
+    assert season_features(rain, tmax, et0, ndvi, 2015)["dry_spell_days"] == 0
+
+
 def test_incomplete_observations_return_none():
     rain, tmax, et0, ndvi = synthetic_series()
     assert season_features(rain.iloc[:50], tmax, et0, ndvi, 2015) is None
@@ -130,3 +136,11 @@ def test_missing_greenup_is_filled_per_district():
     filled = fill_features(df)
     assert filled["greenup_doy"].isna().sum() == 0
     assert filled.loc[df["district"] == "A", "greenup_doy"].iloc[0] == 20.0
+
+
+def test_greenup_fill_ignores_test_seasons():
+    df = label_frame()
+    df.loc[(df["district"] == "A") & (df["season"] >= 2018), "greenup_doy"] = 90.0  # a late era after the split
+    df.loc[(df["district"] == "A") & (df["season"] == 2020), "greenup_doy"] = np.nan
+    filled = fill_features(df, test_start=2018)
+    assert filled.loc[(df["district"] == "A") & (df["season"] == 2020), "greenup_doy"].iloc[0] == 10.0

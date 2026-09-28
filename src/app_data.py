@@ -1,6 +1,7 @@
 """Shared data loading, policy controls and small helpers for the Streamlit pages."""
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -10,9 +11,10 @@ from .model import SPLIT_CURRENT, SPLIT_TEST, SPLIT_TRAIN, score
 from .pricing import PolicyTerms
 from .trigger import classify_risk, evaluate_triggers
 
-DATA_PATH = "data/district_seasons.csv"
-METADATA_PATH = "data/metadata.json"
-OVERLAY_DIR = "static/overlays"        # written by the pipeline
+ROOT = Path(__file__).resolve().parents[1]
+DATA_PATH = str(ROOT / "data" / "district_seasons.csv")
+METADATA_PATH = str(ROOT / "data" / "metadata.json")
+OVERLAY_DIR = str(ROOT / "static" / "overlays")  # written by the pipeline
 OVERLAY_URL = "app/static/overlays"    # the same files as the browser sees them
 LEGEND_FILE = f"{OVERLAY_DIR}/legend.png"
 
@@ -78,9 +80,6 @@ class Context:
         self.current = self.df[self.df["season"] == self.current_season]
         self.seasons = sorted(self.df["season"].unique().tolist())
         self.default_cutoff = float(np.round(self.train["rain_mm"].quantile(DEFAULT_PAYOUT_QUANTILE), -1))
-        _, self.default_metrics = evaluate_triggers(self.test, rainfall_cutoff_mm=self.default_cutoff)
-        self.index_cutoff = self.default_metrics["pred_cutoff"]
-
 
 @st.cache_resource
 def get_context(test_start: int, data_mtime: float) -> Context:

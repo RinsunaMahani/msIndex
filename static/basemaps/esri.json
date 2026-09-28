@@ -1,0 +1,17 @@
+{
+  "version": 8,
+  "name": "Esri World Imagery",
+  "sources": {
+    "imagery": {
+      "type": "raster",
+      "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      "tileSize": 256,
+      "maxzoom": 19,
+      "attribution": "Imagery &copy; Esri, Maxar, Earthstar Geographics"
+    }
+  },
+  "layers": [
+    {"id": "background", "type": "background", "paint": {"background-color": "#0b1620"}},
+    {"id": "imagery", "type": "raster", "source": "imagery"}
+  ]
+}

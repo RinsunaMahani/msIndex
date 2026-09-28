@@ -68,29 +68,37 @@ def season_root(chain: AuditChain) -> str:
     return chain.chain[-1]["record_hash"] if chain.chain else "EMPTY"
 
 
-def payment_batch(chain: AuditChain, terms, season: int, reference_prefix: str = "MSIDX") -> tuple[str, str, dict]:
+def is_current_schema(chain: AuditChain) -> bool:
+    """Ledgers written before decisions carried their own terms and amounts cannot be settled."""
+    return all("policy_terms" in r["payload"] and "payout_zar" in r["payload"] for r in chain.chain)
+
+
+def payment_batch(chain: AuditChain, season: int, reference_prefix: str = "MSIDX") -> tuple[str, str, dict]:
     """Builds a payment instruction file for the payouts in a verified ledger.
 
-    Returns (csv_text, signature, summary). The signature is an HMAC over the file, so the treasury
+    Amounts come from the sealed records, never from the terms currently on screen. Returns
+    (csv_text, signature, summary). The signature is an HMAC over the file, so the treasury
     system can confirm the batch came from this engine and was not edited in transit.
     """
     valid, broken = chain.verify()
     if not valid:
         raise ValueError(f"ledger does not verify at record #{broken}; refusing to build a payment batch")
+    if not is_current_schema(chain):
+        raise ValueError("ledger predates sealed payout amounts; rebuild it before settling")
 
     rows, total = [], 0.0
     for record in chain.chain:
         payload = record["payload"]
         if payload["decision"] != 1:
             continue
-        amount = float(terms.payout_zar(payload["prediction"])) * terms.hectares_per_parcel
+        amount = float(payload["payout_zar"])
         total += amount
         rows.append({
             "reference": f"{reference_prefix}-{season}-{record['index']:04d}",
             "parcel_pseudonym": payload["parcel_pseudonym"],
             "season": payload["season"],
             "index_value": f"{payload['prediction']:.4f}",
-            "payout_share": f"{terms.payout_share(payload['prediction']):.4f}",
+            "payout_share": f"{payload['payout_share']:.4f}",
             "amount_zar": f"{amount:.2f}",
             "currency": "ZAR",
             "model_version": payload["model_version"],
